@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 from lotto_data import create_draw_table, load_records, update_official, parse_csv, save_records, frequencies
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    st = None
+from pro_stats import analyze, tests
 
 DB_PATH = Path(__file__).with_name("lotto.db")
 RNG = secrets.SystemRandom()
@@ -69,14 +73,14 @@ def load_history():
 
 
 def main():
-    st.set_page_config(page_title="로또 AI 분석 시스템 B", page_icon="🎱", layout="wide")
+    st.set_page_config(page_title="로또 AI 분석 시스템 B", page_icon="🎱", layout="centered")
     initialize_database()
     create_draw_table(DB_PATH)
-    st.title("🎱 로또 AI 분석 시스템 B")
-    st.caption("2단계 · 모바일 웹 · 조합 생성 · 실제 당첨 데이터 수집 및 통계")
+    st.title("로또 AI System B PRO v3.0")
+    st.caption("3단계 · 모바일 웹 · 정밀 통계 및 검정")
     st.warning("이 프로그램은 당첨을 예측하지 않습니다. 모든 6/45 조합의 1등 확률은 동일합니다.")
 
-    tab1, tab2, tab3 = st.tabs(["🎟️ 번호 생성", "📋 생성 기록", "📊 당첨 데이터"])
+    tab1, tab2, tab3, tab4 = st.tabs(["번호 생성", "기록", "데이터", "정밀 통계"])
     with tab1:
         count = st.slider("생성할 게임 수", min_value=1, max_value=20, value=5)
         odd_label = st.selectbox("홀수 개수", ["제한 없음", "2개", "3개", "4개"], index=0)
@@ -137,6 +141,43 @@ def main():
             st.caption("출현 빈도는 과거 통계이며, 미래 당첨 확률의 우위를 의미하지 않습니다.")
         else:
             st.info("아직 저장된 당첨 데이터가 없습니다. 공식 사이트 수집 또는 CSV 업로드를 시작하세요.")
+    with tab4:
+        rows = load_records(DB_PATH)
+        if not rows:
+            st.info("먼저 당첨 데이터를 가져오세요.")
+        else:
+            r = analyze(rows)
+            missing = sorted(set(range(1, max(r['ids'])+1))-set(r['ids']))
+            st.write(f"저장 {len(rows)}회 · 마지막 저장 회차 {max(r['ids'])} · 내부 누락 {len(missing)}회")
+            if missing:
+                st.warning(f"누락 회차 예시: {missing[:30]}. 간격과 최근 통계는 관측 자료 기준입니다.")
+            st.caption("최신 실제 회차와 원본의 정확성은 공식 사이트에서 별도 확인하세요. 최근 N회는 저장된 N개 관측입니다.")
+            section = st.selectbox("분석 항목", ["전체 빈도","단기 빈도","중장기 빈도","평균 출현 간격","미출현 기간","동시 출현","상관관계","홀짝","고저","합계","끝자리","연속번호","직전 회차 중복","무작위성 검정","독립성 검정"])
+            if section in ("전체 빈도","단기 빈도","중장기 빈도"):
+                cols = {"전체 빈도":["전체"],"단기 빈도":["최근 5회","최근 10회","최근 20회"],"중장기 빈도":["최근 50회","최근 100회","최근 200회"]}[section]
+                st.bar_chart(r['freq'][cols])
+                st.dataframe(r['freq'][cols])
+            elif section in ("평균 출현 간격","미출현 기간"):
+                st.dataframe(r['gaps']); st.caption("미관측 번호는 결측값입니다. 누락 회차가 있으면 실제 간격과 다를 수 있습니다.")
+            elif section == "동시 출현":
+                st.write("번호쌍"); st.dataframe(r['pairs'].head(50),hide_index=True)
+                st.write("세 번호"); st.dataframe(r['triples'].head(50),hide_index=True)
+            elif section == "상관관계":
+                import altair as alt
+                matrix=r['corr'].rename_axis('번호 A').reset_index().melt(id_vars='번호 A',var_name='번호 B',value_name='상관계수').dropna()
+                st.altair_chart(alt.Chart(matrix).mark_rect().encode(x=alt.X('번호 A:O',axis=alt.Axis(labels=False)),y=alt.Y('번호 B:O',axis=alt.Axis(labels=False)),color=alt.Color('상관계수:Q',scale=alt.Scale(domain=[-1,1],scheme='redblue')),tooltip=['번호 A','번호 B','상관계수']).properties(height=350),use_container_width=True)
+                st.caption("비복원 추출 자체가 번호 사이 음의 상관을 유발합니다. 결측 상관은 표시하지 않습니다.")
+            elif section in ("무작위성 검정","독립성 검정"):
+                st.caption("999회 몬테카를로 검정. 독립성 검정은 인접 회차 겹침 분포만 검사하며 모든 의존성을 검출하지는 않습니다. 두 검정의 보수적 기준은 각각 0.025입니다.")
+                if len(rows)<30: st.warning("표본이 적습니다. 최소 30회 관측 후 검정하세요.")
+                elif st.button("검정 실행"):
+                    with st.spinner("계산 중"):
+                        st.write(tests(r))
+                    st.info("작은 p값은 추가 조사 신호이지 미래 예측력의 증거가 아닙니다.")
+            else:
+                key={"홀짝":"odd","고저":"low","합계":"total","끝자리":"ending","연속번호":"consecutive","직전 회차 중복":"overlap"}[section]
+                st.bar_chart(r[key].rename("횟수")); st.dataframe(r[key].rename("횟수"))
+                st.caption("홀짝은 홀수 개수, 고저는 1~22 개수, 연속번호는 인접 번호쌍 개수입니다. 직전 중복은 실제 연속 회차만 포함합니다.")
     with tab2:
         history = load_history()
         st.metric("최근 저장 기록", f"{len(history)}게임")

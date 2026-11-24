@@ -69,8 +69,12 @@ def fetch_official_draw(draw_no, timeout=8):
             payload = json.load(response)
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
         raise RuntimeError(f'공식 사이트 요청 실패: {exc}') from exc
-    if payload.get('returnValue') != 'success':
+    if not isinstance(payload, dict):
+        raise RuntimeError('예상하지 못한 서버 응답')
+    if payload.get('returnValue') == 'fail':
         return None
+    if payload.get('returnValue') != 'success':
+        raise RuntimeError('지원되지 않는 서버 응답')
     if int(payload.get('drwNo', -1)) != int(draw_no):
         raise ValueError('서버가 요청 회차와 다른 데이터를 반환했습니다.')
     return validate_record({
@@ -82,9 +86,12 @@ def fetch_official_draw(draw_no, timeout=8):
 def update_official(db_path, max_requests=30, delay=0.15):
     """Incremental fetch, at most max_requests; no unverified data are saved."""
     records = load_records(db_path)
-    next_no = max((r['draw_no'] for r in records), default=0) + 1
+    known = {r['draw_no'] for r in records}
+    next_no = next(n for n in range(1, max(known, default=0)+2) if n not in known)
     added = 0
     for no in range(next_no, next_no + max_requests):
+        if no in known:
+            continue
         result = fetch_official_draw(no)
         if result is None:
             break
